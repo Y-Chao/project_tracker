@@ -1,0 +1,84 @@
+name: stale-reminder
+
+on:
+  schedule:
+    - cron: "0 2 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build stale report
+        id: stale
+        run: |
+          python scripts/stale_report.py --days 7 --output stale_report.md
+          {
+            echo "body<<EOF"
+            cat stale_report.md
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create or update reminder issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = "Stale projects reminder";
+            const labelName = "stale-reminder";
+            const body = `${{ steps.stale.outputs.body }}`;
+            const { owner, repo } = context.repo;
+
+            const labels = await github.paginate(github.rest.issues.listLabelsForRepo, {
+              owner,
+              repo,
+              per_page: 100
+            });
+            const exists = labels.some(l => l.name === labelName);
+            if (!exists) {
+              await github.rest.issues.createLabel({
+                owner,
+                repo,
+                name: labelName,
+                color: "f9d0c4",
+                description: "Automated stale project reminder"
+              });
+            }
+
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: "open",
+              labels: labelName,
+              per_page: 100
+            });
+
+            const current = issues.find(i => i.title === title);
+            if (current) {
+              await github.rest.issues.update({
+                owner,
+                repo,
+                issue_number: current.number,
+                title,
+                body
+              });
+            } else {
+              await github.rest.issues.create({
+                owner,
+                repo,
+                title,
+                body,
+                labels: [labelName]
+              });
+            }

@@ -1,0 +1,76 @@
+name: Add New Project
+description: Register a new repository to be tracked in this project tracker.
+title: "[New Project] <project-name>"
+labels: ["add-project"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Fill in the fields below. After submitting, the workflow will automatically
+        create a branch, scaffold the project directory, and open a PR for review.
+
+  - type: input
+    id: project_name
+    attributes:
+      label: Project Name
+      description: Name of the directory to create (no spaces, use underscores or hyphens).
+      placeholder: my_project
+    validations:
+      required: true
+
+  - type: input
+    id: repo_url
+    attributes:
+      label: GitHub Repository URL
+      description: Full URL of the linked repository. Metadata will be synced from here automatically.
+      placeholder: https://github.com/owner/repo
+    validations:
+      required: true
+
+  - type: dropdown
+    id: status
+    attributes:
+      label: Status
+      options:
+        - In Progress
+        - Planned
+        - On Hold
+        - Completed
+      default: 0
+    validations:
+      required: true
+
+  - type: input
+    id: period_start
+    attributes:
+      label: Start Date
+      description: Format `YYYY-MM-DD`
+      placeholder: "2026-01-01"
+    validations:
+      required: true
+
+  - type: input
+    id: period_end
+    attributes:
+      label: End Date
+      description: Format `YYYY-MM-DD`, or type `TBD` if open-ended.
+      placeholder: "2026-12-31"
+    validations:
+      required: true
+
+  - type: textarea
+    id: overview
+    attributes:
+      label: Project Overview
+      description: A brief description of what this project does (shown in the tracker Notes column). Leave blank to auto-populate from the repo description.
+      placeholder: "e.g. A diffusion-based model for protein structure prediction."
+
+  - type: textarea
+    id: goals
+    attributes:
+      label: Project Goals
+      description: "List the main goals, one per line. Leave blank to auto-populate from GitHub milestones."
+      placeholder: |
+        Implement baseline model
+        Benchmark against SOTA
+        Write paper draft

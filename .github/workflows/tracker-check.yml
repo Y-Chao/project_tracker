@@ -1,0 +1,31 @@
+name: tracker-check
+
+on:
+  push:
+    paths:
+      - "README.md"
+      - "project*/README.md"
+      - "scripts/validate_tracker.py"
+      - ".github/workflows/tracker-check.yml"
+  pull_request:
+    paths:
+      - "README.md"
+      - "project*/README.md"
+      - "scripts/validate_tracker.py"
+      - ".github/workflows/tracker-check.yml"
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate project tracker completeness
+        run: python scripts/validate_tracker.py --strict

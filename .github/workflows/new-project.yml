@@ -1,0 +1,84 @@
+name: new-project-scaffold
+# DISABLED: superseded by issue-to-project.yml which scaffolds from Issue form
+# and correctly sets Period, Status, Notes, Goals from the issue fields.
+# This workflow would overwrite the Period with "TODAY - TBD" on every PR open.
+
+on:
+  workflow_dispatch:   # manual only — effectively disabled
+
+permissions:
+  contents: write
+
+jobs:
+  scaffold:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Detect new project directories
+        id: detect
+        run: |
+          EXCLUDE="^\.(git|github)$|^(assets|scripts|__pycache__)$"
+          NEW_DIRS=$(
+            git diff --name-only "origin/${{ github.base_ref }}...HEAD" \
+              | awk -F/ 'NF>1 {print $1}' \
+              | sort -u \
+              | grep -vE "$EXCLUDE" \
+              | while read -r d; do
+                  # Include only dirs whose README.md does not exist on the base branch
+                  if [ -d "$d" ] && ! git cat-file -e "origin/${{ github.base_ref }}:$d/README.md" 2>/dev/null; then
+                    echo "$d"
+                  fi
+                done
+          )
+          {
+            echo "dirs<<EOF"
+            echo "$NEW_DIRS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Scaffold new project directories from template
+        if: steps.detect.outputs.dirs != ''
+        env:
+          NEW_DIRS: ${{ steps.detect.outputs.dirs }}
+        run: |
+          TODAY=$(date +%Y-%m-%d)
+          while IFS= read -r dir; do
+            [ -z "$dir" ] && continue
+            echo "Scaffolding: $dir"
+            mkdir -p "$dir"
+            for src in .github/templates/project_template/*; do
+              fname=$(basename "$src")
+              dest="$dir/$fname"
+              if [ ! -f "$dest" ]; then
+                cp "$src" "$dest"
+              fi
+            done
+            # Replace placeholder values with actual project name and today's date
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+              sed -i '' "s|# <Project Name>|# $dir|g" "$dir/README.md"
+              sed -i '' "s|2026-01-01 - 2026-12-31|$TODAY - TBD|g" "$dir/README.md"
+              sed -i '' "s|\*\*Last Updated\*\*: .*|\*\*Last Updated\*\*: $TODAY|g" "$dir/README.md"
+            else
+              sed -i "s|# <Project Name>|# $dir|g" "$dir/README.md"
+              sed -i "s|2026-01-01 - 2026-12-31|$TODAY - TBD|g" "$dir/README.md"
+              sed -i "s|\*\*Last Updated\*\*: .*|\*\*Last Updated\*\*: $TODAY|g" "$dir/README.md"
+            fi
+          done <<< "$NEW_DIRS"
+
+      - name: Commit scaffold to PR branch
+        if: steps.detect.outputs.dirs != ''
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          if git diff --cached --quiet; then
+            echo "Nothing to commit — all files already present."
+          else
+            git commit -m "chore: scaffold new project directories from template"
+            git push
+          fi

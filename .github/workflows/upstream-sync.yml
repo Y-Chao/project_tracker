@@ -1,0 +1,47 @@
+name: upstream-sync
+
+on:
+  schedule:
+    - cron: "0 3 * * *"   # daily at 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pyyaml
+
+      - name: Sync project metadata from upstream repos
+        env:
+          # PAT_TOKEN must have Contents: Read-only + Metadata: Read-only on target repos.
+          # For private repos, create a Fine-grained PAT and store it as the PAT_TOKEN secret.
+          # Falls back to GITHUB_TOKEN for public repos if PAT_TOKEN is not set.
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+        run: python scripts/sync_from_upstream.py
+
+      - name: Regenerate project table
+        run: python scripts/generate_project_index.py
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -u
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: sync project metadata from upstream repos"
+            git push
+          fi

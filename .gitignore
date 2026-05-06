@@ -1,0 +1,10 @@
+# Python development
+__pycache__/
+*.pyc
+
+# MacOS
+.DS_Store
+
+# Local reference only
+helper.md
+.issues.log

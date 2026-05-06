@@ -1,0 +1,392 @@
+name: issue-to-project
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  scaffold:
+    if: github.event.label.name == 'add-project'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Parse issue fields
+        id: parse
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.issue.body || "";
+
+            const field = (label) => {
+              // GitHub issue forms render as: "### Label\n\nvalue"
+              const re = new RegExp(`###\\s+${label}\\s*\\n+([^\\n#]+)`, "i");
+              const m = body.match(re);
+              return m ? m[1].trim() : "";
+            };
+
+            // Multi-line textarea: capture everything until the next "###" or end
+            const multiField = (label) => {
+              const re = new RegExp(`###\\s+${label}\\s*\\n+([\\s\\S]*?)(?=\\n###|$)`, "i");
+              const m = body.match(re);
+              return m ? m[1].trim() : "";
+            };
+
+            const projectName = field("Project Name").replace(/[^a-zA-Z0-9_\-]/g, "_");
+            const repoUrl     = field("GitHub Repository URL");
+            const status      = field("Status");
+            const startDate   = field("Start Date");
+            const endDate     = field("End Date");
+            const period      = `${startDate} - ${endDate}`;
+            const overview    = field("Project Overview");
+            const goals       = multiField("Project Goals");
+
+            if (!projectName || !repoUrl) {
+              core.setFailed("Could not parse Project Name or Repo URL from issue body.");
+              return;
+            }
+
+            core.setOutput("project_name", projectName);
+            core.setOutput("repo_url",     repoUrl);
+            core.setOutput("status",       status   || "Planned");
+            core.setOutput("period",       period);
+            core.setOutput("branch",       `add-project/${projectName}`);
+            core.setOutput("issue_number", context.payload.issue.number.toString());
+            core.setOutput("overview",     overview);
+            core.setOutput("goals",        goals);
+
+      - name: Check project directory does not already exist
+        run: |
+          if [ -d "${{ steps.parse.outputs.project_name }}" ]; then
+            echo "::error::Directory '${{ steps.parse.outputs.project_name }}' already exists."
+            exit 1
+          fi
+
+      - name: Scaffold project directory
+        env:
+          PROJECT: ${{ steps.parse.outputs.project_name }}
+          REPO_URL: ${{ steps.parse.outputs.repo_url }}
+          STATUS: ${{ steps.parse.outputs.status }}
+          PERIOD: ${{ steps.parse.outputs.period }}
+          OVERVIEW: ${{ steps.parse.outputs.overview }}
+          GOALS: ${{ steps.parse.outputs.goals }}
+          TODAY: ${{ github.event.issue.created_at }}
+        run: |
+          TODAY_DATE=$(echo "$TODAY" | cut -c1-10)
+          mkdir -p "$PROJECT"
+
+          # Copy template files
+          for src in .github/templates/project_template/*; do
+            fname=$(basename "$src")
+            cp "$src" "$PROJECT/$fname"
+          done
+
+          # Resolve Notes value
+          if [ -n "$OVERVIEW" ]; then
+            NOTES="$OVERVIEW"
+          else
+            NOTES="_auto-filled by Claude on first sync_"
+          fi
+
+          # Resolve Goals block
+          if [ -n "$GOALS" ]; then
+            # Prefix each non-empty line with "- " if not already a list item
+            GOALS_BLOCK=$(echo "$GOALS" | sed 's/^[[:space:]]*//' | grep -v '^$' | sed '/^- /! s/^/- /')
+          else
+            GOALS_BLOCK="- _auto-filled by Claude on first sync_"
+          fi
+
+          # Populate README.md
+          {
+            echo "# $PROJECT"
+            echo ""
+            echo "- **Status**: $STATUS"
+            echo "- **Period**: $PERIOD"
+            echo "- **Last Updated**: $TODAY_DATE"
+            echo "- **Repo**: $REPO_URL"
+            echo "- **Notes**: $NOTES"
+            echo "- **TOC**: N/A"
+            echo "- **Graphic Abstract**: graphic_abstract.png"
+            echo ""
+            echo "## Goals"
+            echo "$GOALS_BLOCK"
+            echo ""
+            echo "## Progress Log"
+            echo "- $TODAY_DATE: Project added via issue #${{ steps.parse.outputs.issue_number }}. _commits auto-populated on next sync_"
+          } > "$PROJECT/README.md"
+
+      - name: Commit and push branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "${{ steps.parse.outputs.branch }}"
+          git add "${{ steps.parse.outputs.project_name }}"
+          git commit -m "chore: scaffold project ${{ steps.parse.outputs.project_name }} from issue #${{ steps.parse.outputs.issue_number }}"
+          git push origin "${{ steps.parse.outputs.branch }}"
+
+      - name: Open Pull Request
+        id: open_pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const pr = await github.rest.pulls.create({
+              owner,
+              repo,
+              title: `Add project: ${{ steps.parse.outputs.project_name }}`,
+              head:  "${{ steps.parse.outputs.branch }}",
+              base:  "main",
+              body: [
+                `Closes #${{ steps.parse.outputs.issue_number }}`,
+                "",
+                "## Auto-generated project scaffold",
+                "",
+                `| Field | Value |`,
+                `|---|---|`,
+                `| **Project** | \`${{ steps.parse.outputs.project_name }}\` |`,
+                `| **Repo** | ${{ steps.parse.outputs.repo_url }} |`,
+                `| **Status** | ${{ steps.parse.outputs.status }} |`,
+                `| **Period** | ${{ steps.parse.outputs.period }} |`,
+                "",
+                "After this PR is merged, `upstream-sync` will pull the latest metadata",
+                "(description, commit date, open issues) from the linked repository automatically.",
+              ].join("\n"),
+            });
+            console.log(`PR #${pr.data.number} created: ${pr.data.html_url}`);
+            core.setOutput("pr_number", pr.data.number.toString());
+
+            // Request review from the repo owner
+            try {
+              await github.rest.pulls.requestReviewers({
+                owner,
+                repo,
+                pull_number: pr.data.number,
+                reviewers: [owner],
+              });
+              console.log(`Review requested from @${owner}`);
+            } catch (e) {
+              // Non-fatal: owner may be the PR author (GitHub blocks self-review requests)
+              console.log(`Could not request review from @${owner}: ${e.message}`);
+            }
+
+      - name: Post @claude[agent] enrichment request on PR
+        uses: actions/github-script@v7
+        with:
+          # MUST use PAT_TOKEN here — GITHUB_TOKEN-triggered comments do NOT
+          # fire other workflows (GitHub loop-prevention). PAT posts as the user,
+          # which triggers claude-review.yml.
+          github-token: ${{ secrets.PAT_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber    = parseInt("${{ steps.open_pr.outputs.pr_number }}");
+            const projectName = "${{ steps.parse.outputs.project_name }}";
+            const repoUrl     = "${{ steps.parse.outputs.repo_url }}";
+
+            // ── Fetch linked repo content ─────────────────────────────────────
+            const token = "${{ secrets.PAT_TOKEN }}";
+            const tryGet = async (url) => {
+              try {
+                const resp = await fetch(`https://api.github.com${url}`, {
+                  headers: {
+                    Authorization: `token ${token}`,
+                    Accept: "application/vnd.github.v3+json",
+                    "User-Agent": "project-tracker-bot",
+                  }
+                });
+                if (!resp.ok) return null;
+                return await resp.json();
+              } catch { return null; }
+            };
+
+            const m = repoUrl.match(/github\.com\/([^/]+)\/([^/\s#]+?)(?:\.git)?\/?$/);
+            let contextBlock = "";
+            if (m) {
+              const [, upOwner, upRepo] = m;
+              const [repoMeta, readmeRaw] = await Promise.all([
+                tryGet(`/repos/${upOwner}/${upRepo}`),
+                tryGet(`/repos/${upOwner}/${upRepo}/readme`),
+              ]);
+
+              const repoDesc  = repoMeta?.description || "(none)";
+              const readmeTxt = readmeRaw?.content
+                ? Buffer.from(readmeRaw.content, "base64").toString("utf-8").slice(0, 2000)
+                : "(README not found)";
+
+              contextBlock = [
+                `---`,
+                `**Context pre-fetched by workflow (repo may be private):**`,
+                ``,
+                `**GitHub description:** ${repoDesc}`,
+                ``,
+                `**README (first 2000 chars):**`,
+                `\`\`\``,
+                readmeTxt,
+                `\`\`\``,
+              ].join("\n");
+            }
+
+            await github.rest.issues.createComment({
+              owner, repo,
+              issue_number: prNumber,
+              body: [
+                `@claude[agent] Please enrich the scaffolded project README for this PR.`,
+                ``,
+                `**Scaffolded file:** \`${projectName}/README.md\``,
+                `**Linked repository:** ${repoUrl}`,
+                ``,
+                `## Instructions`,
+                `1. Read \`${projectName}/README.md\` in this branch (already checked out).`,
+                `2. Use **only** the pre-fetched context below — do NOT attempt to access`,
+                `   the linked repo directly (it may be private).`,
+                `3. Fill in the \`Notes\` field with **one concise sentence** describing`,
+                `   what the project does. Infer from the README content below.`,
+                `4. Fill in the \`Goals\` section with **3–5 concrete goals**. Derive them`,
+                `   from whatever the README contains — features, motivation, use-cases etc.`,
+                `   Do NOT leave this empty even if no explicit "Goals" section exists.`,
+                `5. Do **not** change Status, Period, Last Updated, Repo, or any other fields.`,
+                `6. Commit the updated \`${projectName}/README.md\` to this branch with message:`,
+                `   \`chore: enrich ${projectName} README via Claude\``,
+                ``,
+                contextBlock,
+              ].join("\n"),
+            });
+
+      - name: Comment on issue with PR link
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prs = await github.rest.pulls.list({
+              owner, repo, state: "open",
+              head: `${owner}:${{ steps.parse.outputs.branch }}`
+            });
+            const pr = prs.data[0];
+            if (pr) {
+              await github.rest.issues.createComment({
+                owner, repo,
+                issue_number: ${{ steps.parse.outputs.issue_number }},
+                body: `✅ Project scaffolded! Review and merge the PR: ${pr.html_url}`
+              });
+            }
+
+      - name: Compare issue content with linked repo
+        uses: actions/github-script@v7
+        env:
+          UPSTREAM_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const repoUrl  = "${{ steps.parse.outputs.repo_url }}";
+            const overview = `${{ steps.parse.outputs.overview }}`.trim();
+            const goals    = `${{ steps.parse.outputs.goals }}`.trim();
+
+            // Parse owner/repo from URL
+            const m = repoUrl.match(/github\.com\/([^/]+)\/([^/\s#]+?)(?:\.git)?\/?$/);
+            if (!m) return;
+            const [, upOwner, upRepo] = m;
+
+            // Helpers — use native fetch with PAT so private repos work
+            const token = process.env.UPSTREAM_TOKEN;
+            const tryGet = async (url) => {
+              try {
+                const resp = await fetch(`https://api.github.com${url}`, {
+                  headers: {
+                    Authorization: `token ${token}`,
+                    Accept: "application/vnd.github.v3+json",
+                    "User-Agent": "project-tracker-bot",
+                  }
+                });
+                if (!resp.ok) return null;
+                return await resp.json();
+              } catch { return null; }
+            };
+
+            const b64 = (data) => data?.content
+              ? Buffer.from(data.content, "base64").toString("utf-8")
+              : "";
+
+            const wordSet = (str) =>
+              new Set(str.toLowerCase().match(/\b[a-z]{4,}\b/g) || []);
+
+            const overlap = (a, b) => {
+              const sa = wordSet(a), sb = wordSet(b);
+              if (!sa.size || !sb.size) return 1; // nothing to compare → no flag
+              let common = 0;
+              for (const w of sa) if (sb.has(w)) common++;
+              return common / Math.min(sa.size, sb.size);
+            };
+
+            // Fetch upstream data
+            const repoMeta    = await tryGet(`/repos/${upOwner}/${upRepo}`);
+            // Prefer .github/tracker.yml, fall back to root tracker.yml
+            const trackerRaw  = await tryGet(`/repos/${upOwner}/${upRepo}/contents/.github/tracker.yml`)
+                             || await tryGet(`/repos/${upOwner}/${upRepo}/contents/tracker.yml`);
+            const readmeRaw   = await tryGet(`/repos/${upOwner}/${upRepo}/readme`);
+
+            const repoDesc    = repoMeta?.description || "";
+            const trackerText = b64(trackerRaw);
+            const readmeText  = b64(readmeRaw).split("\n").slice(0, 60).join("\n");
+
+            // Extract tracker.yml description + goals
+            const trackerDescM = trackerText.match(/^description:\s*["']?(.+?)["']?\s*$/m);
+            const trackerDesc  = trackerDescM ? trackerDescM[1] : "";
+            const trackerGoalsM = trackerText.match(/^goals:\s*\n((?:\s+-\s+.+\n?)+)/m);
+            const trackerGoals = trackerGoalsM
+              ? trackerGoalsM[1].replace(/^\s+-\s+["']?|["']?\s*$/gm, "").trim()
+              : "";
+
+            // Best available "authoritative" description from the repo
+            const authDesc  = trackerDesc  || repoDesc  || "";
+            const authGoals = trackerGoals || "";
+
+            const lines = [
+              "## 🔍 Content comparison: Issue vs Linked Repository",
+              "",
+              "| | Issue (what you wrote) | Linked Repo (what was found) |",
+              "|---|---|---|",
+              `| **Overview / Notes** | ${overview || "_not provided_"} | ${authDesc || "_not found_"} |`,
+              `| **Goals** | ${goals.replace(/\n/g, "<br>") || "_not provided_"} | ${authGoals.replace(/\n/g, "<br>") || "_not found (tracker.yml missing)_"} |`,
+              "",
+            ];
+
+            // Compute similarity and flag if low
+            const descSim  = overlap(overview, authDesc);
+            const goalsSim = overlap(goals, authGoals);
+            const flags = [];
+
+            if (overview && authDesc && descSim < 0.25) {
+              flags.push(`⚠️ **Overview mismatch** (${Math.round(descSim*100)}% word overlap): the overview you wrote differs significantly from the repo description. Consider updating the \`description\` in \`tracker.yml\` in the linked repo, or revise the overview here.`);
+            }
+            if (goals && authGoals && goalsSim < 0.2) {
+              flags.push(`⚠️ **Goals mismatch** (${Math.round(goalsSim*100)}% word overlap): the goals you listed differ significantly from those in \`tracker.yml\`. Consider aligning them.`);
+            }
+            if (!trackerText) {
+              flags.push(`💡 **tracker.yml not found** in \`${upOwner}/${upRepo}\`. Add one (see \`.github/templates/tracker.yml\`) to get precise sync of description and goals.`);
+            }
+
+            if (flags.length) {
+              lines.push("### Suggestions");
+              lines.push(...flags.map(f => `- ${f}`));
+            } else {
+              lines.push("✅ No significant mismatches detected.");
+            }
+
+            // Find the open PR and post comment
+            const prs = await github.rest.pulls.list({
+              owner, repo, state: "open",
+              head: `${owner}:${{ steps.parse.outputs.branch }}`
+            });
+            const pr = prs.data[0];
+            if (pr) {
+              await github.rest.issues.createComment({
+                owner, repo,
+                issue_number: pr.number,
+                body: lines.join("\n"),
+              });
+            }

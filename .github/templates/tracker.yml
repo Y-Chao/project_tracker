@@ -1,0 +1,17 @@
+# tracker.yml
+# Place this file at the ROOT of your project repository.
+# The project-tracker will read it during sync to populate metadata.
+# Fields here take priority over GitHub API data (milestones, topics, description).
+
+# One-line description shown in the tracker Notes column.
+description: "Brief description of this project."
+
+# Project goals — shown in the Goals section of the project README.
+# Use open milestones on GitHub if you prefer not to maintain this file.
+goals:
+  - "Goal 1"
+  - "Goal 2"
+
+# Optional: fix the status shown in the tracker regardless of repo activity.
+# Allowed values: In Progress | Planned | On Hold | Completed
+# status: "In Progress"

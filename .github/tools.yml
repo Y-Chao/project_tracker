@@ -1,0 +1,21 @@
+# Tools used to assist with this project tracker repository.
+# Each entry will be rendered as a badge in the README footer.
+#
+# Fields:
+#   name    : display name
+#   url     : link for the badge
+#   logo    : shields.io logo slug (optional, e.g. github, openai, python)
+#   color   : badge color (optional, default: grey)
+
+tools:
+  - name: GitHub Copilot
+    url: https://github.com/features/copilot
+    logo: github
+    color: "black"
+    note: "Claude Sonnet 4.6 — automated workflows & scaffolding"
+
+  - name: GitHub Actions
+    url: https://github.com/features/actions
+    logo: githubactions
+    color: "2088FF"
+    note: "CI/CD pipelines"
